@@ -64,6 +64,7 @@ class FAST(nn.Module):
         else:
             det_out = self._upsample(det_out, imgs.size(), scale=4)
             det_res = self.det_head.get_results(det_out, img_metas, cfg, scale=2)
-            outputs.update(det_res)
+            # outputs.update(det_res)
+            return det_res
 
         return outputs

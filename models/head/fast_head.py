@@ -8,6 +8,8 @@ import torch.nn.functional as F
 import numpy as np
 import json
 import cv2
+import kornia
+from Connected_components_PyTorch.cc_torch import connected_components_labeling
 try:
     from ..post_processing import ccl_cuda
 except:
@@ -80,29 +82,44 @@ class FASTHead(nn.Module):
         score_maps = score_maps.squeeze(1)  # B*640*640
         
         kernels = (out[:, 0, :, :] > 0).to(torch.uint8)  # B*160*160
-        if kernels.is_cuda:
-            labels_ = ccl_cuda.ccl_batch(kernels)  # B*160*160
-        else:
-            labels_ = []
-            for kernel in kernels.numpy():
-                ret, label_ = cv2.connectedComponents(kernel)
-                labels_.append(label_)
-            labels_ = np.array(labels_)
-            labels_ = torch.from_numpy(labels_)
+
+        # Original
+        # if kernels.is_cuda:
+        #     labels_ = ccl_cuda.ccl_batch(kernels)  # B*160*160
+        # else:
+        #     labels_ = []
+        #     for kernel in kernels.numpy():
+        #         ret, label_ = cv2.connectedComponents(kernel)
+        #         labels_.append(label_)
+        #     labels_ = np.array(labels_)
+        #     labels_ = torch.from_numpy(labels_)
+        
+        # kornia's CC
+        kernels = (kernels * 1.0).to(torch.float32)
+        labels_ = kornia.contrib.connected_components(kernels, num_iterations=500)
+
+        # cc_torch
+        # labels_ = connected_components_labeling(kernels[0]) # accept H,W
+        # labels_ = labels_.unsqueeze(0) # B * 160 * 160
+
         labels = labels_.unsqueeze(1).to(torch.float32)  # B*1*160*160
         labels = F.interpolate(labels, size=(img_size[0] // scale, img_size[1] // scale), mode='nearest')  # B*1*320*320
         labels = self._max_pooling(labels, scale=scale)
         labels = F.interpolate(labels, size=(img_size[0], img_size[1]), mode='nearest')  # B*1*640*640
         labels = labels.squeeze(1).to(torch.int32)  # B*640*640
-
-        keys = [torch.unique(labels_[i], sorted=True) for i in range(batch_size)]
-
+        # combine labels and score_maps
+        output = torch.cat([labels.unsqueeze(1), score_maps.unsqueeze(1)], dim=1)  # B*2*640*640
+        return output
+        # keys = [torch.unique(labels_[i], sorted=True) for i in range(batch_size)]
+        # return keys, labels, score_maps
+    
         if not self.training:
             torch.cuda.synchronize()
             outputs.update(dict(
                 post_time=time.time() - start
             ))
             
+        return keys, labels, score_maps
         outputs.update(dict(kernels=kernels.data.cpu()))
 
         scales = (float(org_img_size[1]) / float(img_size[1]),

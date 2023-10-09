@@ -125,7 +125,8 @@ class My2DLayer(nn.Module):
     
     @property
     def module_str(self):
-        raise NotImplementedError
+        pass
+        #raise NotImplementedError
     
     @property
     def config(self):
