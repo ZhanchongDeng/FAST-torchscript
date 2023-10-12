@@ -1,0 +1,13 @@
+torch
+torchvision
+editdistance
+Polygon3
+pyclipper
+Cython
+mmcv==1.7.1
+prefetch_generator
+scipy
+yacs
+tqdm
+opencv-python
+kornia

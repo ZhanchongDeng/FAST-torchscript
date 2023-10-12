@@ -9,7 +9,6 @@ import numpy as np
 import json
 import cv2
 import kornia
-from Connected_components_PyTorch.cc_torch import connected_components_labeling
 try:
     from ..post_processing import ccl_cuda
 except:

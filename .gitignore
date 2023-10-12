@@ -33,3 +33,6 @@ tmp/
 /models/post_processing/ccl/.idea/workspace.xml
 
 .DS_Store
+test_images/
+venv/
+log.txt

@@ -16,42 +16,48 @@ warnings.filterwarnings('ignore')
 import json
 import torchvision
 from torchvision import transforms
-from torchinfo import summary
 import cv2
 import numpy as np
 from models.utils import generate_bbox
 import math
 
 def main(args):
-    img_size = [640, 640]
-    ts_filename = "fast.torchscript"
+    device = "cuda"
+    model_base_dir = Path("build") / Path(args.checkpoint).stem
+    model_base_dir.mkdir(exist_ok=True, parents=True)
+    ts_filename = model_base_dir / f"fast_{device}.torchscript"
 
-    args.img_size = img_size
     image_name = args.image_name
     img = torchvision.io.read_image(image_name)
     img = img / 255.0
-    img = transforms.Resize(img_size)(img)
+    img = transforms.Resize(args.model_size)(img)
     img = img.unsqueeze(0)
     
     # Standard Run
     model_wrap = FASTWrapper(args)
     model_wrap.model.eval()
+    model_wrap.model.to(device)
     with torch.no_grad():
-        output = model_wrap(img)
+        output = model_wrap(img.to(device))
         labels = output[:,0]
         score_maps = output[:,1]
         keys = [torch.unique(labels[i], sorted=True) for i in range(1)]
     
-
     # Convert To TorchScript
     model_wrap = FASTWrapper(args)
-    model_wrap.model.eval()
-    ts_model = torch.jit.trace(model_wrap, img.cuda())
-    ts_model.save(f"build/{ts_filename}")
+    for device in ['cpu', 'cuda']:
+        model_wrap.model.eval()
+        model_wrap.to(device)
+        ts_model = torch.jit.trace(model_wrap, img.to(device))
+        ts_model.to(device)
+        ts_filename = model_base_dir / f"fast_{device}.torchscript"
+        ts_model.save(str(ts_filename))
 
     # load torchscript
-    ts_model = torch.jit.load(f"build/{ts_filename}")
-    ts_output = ts_model(img.cuda())
+    ts_model = torch.jit.load(str(ts_filename))
+    ts_model.eval()
+    ts_model.to(device)
+    ts_output = ts_model(img.to(device))
     ts_labels = ts_output[:,0]
     ts_score_maps = ts_output[:,1]
     ts_keys = [torch.unique(ts_labels[i], sorted=True) for i in range(1)]
@@ -66,12 +72,13 @@ def main(args):
     boxes, scores = generate_bbox(ts_keys[0], ts_labels[0], ts_score_maps[0], args.conf_thresh, args.min_area, 'rect')
     print(scores)
     raw_img = cv2.imread(image_name)
-    raw_img = cv2.resize(raw_img, img_size)
+    raw_img = cv2.resize(raw_img, args.model_size)
     for i, box in enumerate(boxes):
         # also show scores
         cv2.putText(raw_img, str(round(scores[i], 2)), (box[0], box[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.polylines(raw_img, [np.array(box).astype(np.int32).reshape((-1, 1, 2))], True, color=(0, 255, 0), thickness=2)
-    cv2.imwrite(f"build/output-{Path(image_name).name}", raw_img)
+        img_save_path = model_base_dir / f"output-{Path(image_name).name}"
+        cv2.imwrite(str(img_save_path), raw_img)
 
 
 
@@ -99,7 +106,6 @@ class FASTWrapper(torch.nn.Module):
 
         
         model = build_model(cfg.model)
-        model = model.cuda()
         if args.checkpoint is not None:
             if os.path.isfile(args.checkpoint):
                 print("Loading model and optimizer from checkpoint '{}'".format(args.checkpoint))
@@ -132,10 +138,10 @@ class FASTWrapper(torch.nn.Module):
     def forward(self, img):
         img = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(img)
         input_dict = dict(
-            imgs=img.cuda(non_blocking=True),
+            imgs=img,
             img_metas=dict(
-                org_img_size = [args.img_size],
-                img_size = [args.img_size]
+                org_img_size = [args.model_size],
+                img_size = [args.model_size]
             )
         )
         input_dict.update(dict(cfg=self.cfg))
@@ -190,20 +196,24 @@ if __name__ == '__main__':
     parser.add_argument('--min-area', default=250, type=int)
     parser.add_argument('--batch-size', default=1, type=int)
     parser.add_argument('--worker', default=4, type=int)
-    parser.add_argument('--ema', action='store_true')
+    parser.add_argument('--ema', action='store_false', default = True)
     parser.add_argument('--cpu', action='store_true')
 
     parser.add_argument('--image-name')
+    parser.add_argument('--model-size', type = int)
 
     args = parser.parse_args()
 
     # tiny ic17mlt 640
-    args.config = "/workspace/bobby/FAST/config/fast/ic17mlt/fast_tiny_ic17mlt_640.py"
-    args.checkpoint = "/workspace/bobby/FAST/pretrained/fast_tiny_ic17mlt_640.pth"
+    # model_size = 640
+    # args.config = "/workspace/bobby/FAST/config/fast/ic17mlt/fast_tiny_ic17mlt_640.py"
+    # args.checkpoint = "/workspace/bobby/FAST/pretrained/fast_tiny_ic17mlt_640.pth"
     # base total_text 800
+    # model_size = 800
     # args.config = "/workspace/bobby/FAST/config/fast/tt/fast_base_tt_800_finetune_ic17mlt.py"
     # args.checkpoint = "/workspace/bobby/FAST/pretrained/fast_base_tt_800_finetune_ic17mlt.pth"
     config_name = os.path.basename(args.config)
+    args.model_size = [args.model_size, args.model_size]
     logging.basicConfig(filename=f'log.txt', level=logging.INFO)
 
     main(args)
