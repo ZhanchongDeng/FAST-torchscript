@@ -93,15 +93,12 @@ class FASTHead(nn.Module):
         #     labels_ = np.array(labels_)
         #     labels_ = torch.from_numpy(labels_)
         
-        # kornia's CC
+        # kornia's connected components
         kernels = (kernels * 1.0).to(torch.float32)
-        labels_ = kornia.contrib.connected_components(kernels, num_iterations=500)
-
-        # cc_torch
-        # labels_ = connected_components_labeling(kernels[0]) # accept H,W
-        # labels_ = labels_.unsqueeze(0) # B * 160 * 160
-
-        labels = labels_.unsqueeze(1).to(torch.float32)  # B*1*160*160
+        # add an extra channel after index 0
+        kernels = kernels.unsqueeze(1) # B * 1 * 160 * 160 [0's and 1's]
+        labels_ = kornia.contrib.connected_components(kernels, num_iterations=500) # B * 1 * 160 * 160 [0 + {unique labels}]
+        labels = labels_.to(torch.float32)  # B*1*160*160
         labels = F.interpolate(labels, size=(img_size[0] // scale, img_size[1] // scale), mode='nearest')  # B*1*320*320
         labels = self._max_pooling(labels, scale=scale)
         labels = F.interpolate(labels, size=(img_size[0], img_size[1]), mode='nearest')  # B*1*640*640
@@ -109,31 +106,6 @@ class FASTHead(nn.Module):
         # combine labels and score_maps
         output = torch.cat([labels.unsqueeze(1), score_maps.unsqueeze(1)], dim=1)  # B*2*640*640
         return output
-        # keys = [torch.unique(labels_[i], sorted=True) for i in range(batch_size)]
-        # return keys, labels, score_maps
-    
-        if not self.training:
-            torch.cuda.synchronize()
-            outputs.update(dict(
-                post_time=time.time() - start
-            ))
-            
-        return keys, labels, score_maps
-        outputs.update(dict(kernels=kernels.data.cpu()))
-
-        scales = (float(org_img_size[1]) / float(img_size[1]),
-                  float(org_img_size[0]) / float(img_size[0]))
-
-        results = []
-        for i in range(batch_size):
-            bboxes, scores = generate_bbox(keys[i], labels[i], score_maps[i], scales, cfg)
-            results.append(dict(
-                bboxes=bboxes,
-                scores=scores
-            ))
-        outputs.update(dict(results=results))
-
-        return outputs
 
     def _max_pooling(self, x, scale=1):
         if scale == 1:
