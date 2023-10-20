@@ -114,7 +114,6 @@ class FASTWrapper(torch.nn.Module):
         else:
             img = torch.randn(1, 3, self.model_size, self.model_size)
         
-        print(img.shape)
         ts_model = torch.jit.trace(self, img.to(device))
         model_path = Path(model_dir) / f"fast_{device}.torchscript"
         ts_model.save(str(model_path))
@@ -122,7 +121,7 @@ class FASTWrapper(torch.nn.Module):
         # Random test
         if validate:
             rand_input = torch.randn(1, 3, self.model_size, self.model_size)
-            output_gt = self.model(rand_input.to(device))
+            output_gt = self.forward(rand_input.to(device))
             output_ts = ts_model(rand_input.to(device))
             assert torch.allclose(output_gt[0], output_ts[0], atol=1e-05)
             logging.info("Torchscript model validated")
@@ -135,5 +134,6 @@ if __name__ == '__main__':
     parser.add_argument('--validate', help='Run image for both model and compare results to ensure integrity of the torchscript model', action='store_true')
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO)
     wrapper_model = FASTWrapper(args.config)
     wrapper_model.to_torchscript("build", "cuda", args.image, args.validate)
