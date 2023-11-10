@@ -1,16 +1,21 @@
-import argparse
-from pathlib import Path
 import logging
 import warnings
+from pathlib import Path
+
 # filter torchscript warning, see function to_torchscript
 warnings.filterwarnings('ignore')
 
+import math
+
+import cv2
+import numpy as np
 import torch
 import torchvision
 from mmcv import Config
 
 from models import build_model
 from models.utils import fuse_module, rep_model_convert
+
 
 class FASTWrapper(torch.nn.Module):
     '''Wrapper for FAST model for it to be convertible to torchscript.
@@ -89,51 +94,38 @@ class FASTWrapper(torch.nn.Module):
     def module_str(self):
         return "fast_wrapper"
 
-    def to_torchscript(self, model_dir, device, image = None, validate = False):
-        '''
-        Convert model to torchscript and save to [model config stem]/fast_{device}.torchscript
 
-        Note: if you uncomment filter.warning at the start of the file you may see a warning
-        about "Converting a tensor to a Python boolean..." and show the code with
-            if len(image.shape) < 3 or image.shape[-3] != 1:
-        This is fine because we should expect the input image to be correct, thus the input
-        to connectedComponents will also be fine.
-        
-        Args:
-            model_dir(str): directory to save the torchscript model
-            device (str): device to run the model on [cuda:[n], cpu, cuda]
-            image (str): path to image to trace the model on
-            '''
-        self.model.to(device)
-        self.model.eval()
-        if image is not None:
-            img = torchvision.io.read_image(image)
-            img = img / 255.0
-            img = torchvision.transforms.Resize([self.model_size, self.model_size])(img)
-            img = img.unsqueeze(0)
-        else:
-            img = torch.randn(1, 3, self.model_size, self.model_size)
-        
-        ts_model = torch.jit.trace(self, img.to(device))
-        model_path = Path(model_dir) / f"fast_{device}.torchscript"
-        ts_model.save(str(model_path))
+def fast_decode(label, score, min_score, min_area, bbox_type):
+        keys = torch.unique(label, sorted=True)
+        label_num = len(keys)
+        bboxes = []
+        scores = []
+        for index in range(1, label_num):
+            i = keys[index]
+            ind = (label == i)
+            ind_np = ind.data.cpu().numpy()
 
-        # Random test
-        if validate:
-            rand_input = torch.randn(1, 3, self.model_size, self.model_size)
-            output_gt = self.forward(rand_input.to(device))
-            output_ts = ts_model(rand_input.to(device))
-            assert torch.allclose(output_gt[0], output_ts[0], atol=1e-05)
-            logging.info("Torchscript model validated")
+            points = np.array(np.where(ind_np)).transpose((1, 0))
+            if points.shape[0] < min_area:
+                label[ind] = 0
+                continue
+            score_i = score[ind].mean().item()
+            if score_i < min_score:
+                label[ind] = 0
+                continue
+            
+            if bbox_type == 'rect':
+                rect = cv2.minAreaRect(points[:, ::-1])
+                alpha = math.sqrt(math.sqrt(points.shape[0] / (rect[1][0] * rect[1][1])))
+                rect = (rect[0], (rect[1][0] * alpha, rect[1][1] * alpha), rect[2])
+                bbox = cv2.boxPoints(rect)
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Convert FAST model to torchscript')
-    parser.add_argument('--config', help='config file path')
-    parser.add_argument('--image', help='test image path', default = None)
-    parser.add_argument('--validate', help='Run image for both model and compare results to ensure integrity of the torchscript model', action='store_true')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO)
-    wrapper_model = FASTWrapper(args.config)
-    wrapper_model.to_torchscript("build", "cuda", args.image, args.validate)
+            elif bbox_type == 'poly':
+                binary = np.zeros(label.shape, dtype='uint8')
+                binary[ind_np] = 1
+                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                bbox = contours[0]
+            bbox = bbox.astype('int32')
+            bboxes.append(bbox.reshape(-1).tolist())
+            scores.append(score_i)
+        return bboxes, scores
